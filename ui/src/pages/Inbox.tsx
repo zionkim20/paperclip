@@ -683,7 +683,10 @@ export function Inbox() {
   );
   const [groupBy, setGroupBy] = useState<InboxWorkItemGroupBy>(() => loadInboxWorkItemGroupBy());
   const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("none");
-  const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("most_recent");
+  // HUM-126: default to leverage so the items whose unblock would free the
+  // most downstream work float to the top. With dozens of blocked issues,
+  // sorting by recency or urgency alone wasn't enough to triage.
+  const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("leverage");
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
   const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);

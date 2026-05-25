@@ -355,11 +355,14 @@ function BlockedInboxRow({
         </span>
       }
       titleSuffix={
-        <BlockedReasonChip
-          reason={row.attention.reason}
-          severity={row.attention.severity}
-          className="ml-2 max-w-[12rem] align-middle sm:hidden"
-        />
+        <>
+          {row.blockerFanOut > 1 ? <LeverageChip fanOut={row.blockerFanOut} /> : null}
+          <BlockedReasonChip
+            reason={row.attention.reason}
+            severity={row.attention.severity}
+            className="ml-2 max-w-[12rem] align-middle sm:hidden"
+          />
+        </>
       }
       mobileMeta={mobileMeta}
       desktopTrailing={desktopTrailing}
@@ -381,6 +384,22 @@ function BlockedRowDesktopMeta({
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
       {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
+    </span>
+  );
+}
+
+// HUM-126: visual cue that resolving this row's gating blocker would unblock
+// more than itself. Only renders when fanOut > 1; below that there's nothing
+// useful to say (every blocked row would otherwise wear a 1-of-1 badge).
+function LeverageChip({ fanOut }: { fanOut: number }) {
+  const label = `Blocks ${fanOut} issues`;
+  return (
+    <span
+      data-testid="blocked-row-leverage-chip"
+      title="Resolving the upstream blocker would unblock this row and others that share it."
+      className="ml-2 inline-flex items-center rounded-full border border-amber-400/60 bg-amber-50/80 px-1.5 py-0.5 align-middle text-[10px] font-medium text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200"
+    >
+      {label}
     </span>
   );
 }

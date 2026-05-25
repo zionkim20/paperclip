@@ -104,10 +104,15 @@ export interface BlockedInboxIssueRow {
   variant: BlockedReasonVariant;
   reasonLabel: string;
   stoppedAtMs: number | null;
+  // HUM-126: fan-out of this row's most-cited upstream blocker across the
+  // current dataset. >1 means resolving that one blocker would unblock that
+  // many issues (this one plus others). Drives the "leverage" sort and the
+  // "Blocks N issues" chip the user sees on each row.
+  blockerFanOut: number;
 }
 
 export type BlockedInboxGroupBy = "blocker_type" | "none";
-export type BlockedInboxSort = "urgency" | "most_recent" | "longest_stopped";
+export type BlockedInboxSort = "leverage" | "urgency" | "most_recent" | "longest_stopped";
 
 export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = [
   ["blocker_type", "Blocker type"],
@@ -115,6 +120,7 @@ export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = [
 ];
 
 export const BLOCKED_SORT_OPTIONS: readonly [BlockedInboxSort, string][] = [
+  ["leverage", "What unblocks most"],
   ["urgency", "Most urgent"],
   ["most_recent", "Most recent"],
   ["longest_stopped", "Longest stopped"],
@@ -126,7 +132,37 @@ export interface BlockedInboxGroup {
   rows: BlockedInboxIssueRow[];
 }
 
+// HUM-126: for the current dataset, count how many issues cite each upstream
+// blocker. Used to surface "this blocker is gating N issues" so the user can
+// triage by leverage, not just by which item is loudest.
+export function computeBlockerFanOut(issues: readonly Issue[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const issue of issues) {
+    const blockers = issue.blockedBy ?? [];
+    if (blockers.length === 0) continue;
+    const seen = new Set<string>();
+    for (const blocker of blockers) {
+      if (seen.has(blocker.id)) continue;
+      seen.add(blocker.id);
+      counts.set(blocker.id, (counts.get(blocker.id) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function maxBlockerFanOutForIssue(issue: Issue, fanOut: ReadonlyMap<string, number>): number {
+  const blockers = issue.blockedBy ?? [];
+  if (blockers.length === 0) return 0;
+  let max = 0;
+  for (const blocker of blockers) {
+    const count = fanOut.get(blocker.id) ?? 0;
+    if (count > max) max = count;
+  }
+  return max;
+}
+
 export function buildBlockedInboxRows(issues: readonly Issue[]): BlockedInboxIssueRow[] {
+  const fanOut = computeBlockerFanOut(issues);
   const rows: BlockedInboxIssueRow[] = [];
   for (const issue of issues) {
     const attention = issue.blockedInboxAttention;
@@ -137,6 +173,7 @@ export function buildBlockedInboxRows(issues: readonly Issue[]): BlockedInboxIss
       variant: blockedReasonVariant(attention.reason),
       reasonLabel: blockedReasonLabel(attention.reason),
       stoppedAtMs: attention.stoppedSinceAt ? new Date(attention.stoppedSinceAt).getTime() : null,
+      blockerFanOut: maxBlockerFanOutForIssue(issue, fanOut),
     });
   }
   return rows;
@@ -161,8 +198,23 @@ function compareBlockedRowsByTitle(a: BlockedInboxIssueRow, b: BlockedInboxIssue
 export function compareBlockedRows(
   a: BlockedInboxIssueRow,
   b: BlockedInboxIssueRow,
-  sort: BlockedInboxSort = "urgency",
+  sort: BlockedInboxSort = "leverage",
 ): number {
+  if (sort === "leverage") {
+    // Resolve the highest-fan-out blockers first. Tie-break on severity
+    // (a 1-fan-out critical still outranks two 1-fan-out lows), then on
+    // longest-stopped so equally-leveraged items surface oldest-first.
+    const fanOutDiff = b.blockerFanOut - a.blockerFanOut;
+    if (fanOutDiff !== 0) return fanOutDiff;
+    const severityDiff = blockedSeverityRank(a.attention.severity) - blockedSeverityRank(b.attention.severity);
+    if (severityDiff !== 0) return severityDiff;
+    const aStopped = a.stoppedAtMs ?? Number.POSITIVE_INFINITY;
+    const bStopped = b.stoppedAtMs ?? Number.POSITIVE_INFINITY;
+    const stoppedDiff = aStopped - bStopped;
+    if (stoppedDiff !== 0) return stoppedDiff;
+    return compareBlockedRowsByTitle(a, b);
+  }
+
   if (sort === "most_recent") {
     const recencyDiff = blockedRowRecencyMs(b) - blockedRowRecencyMs(a);
     if (recencyDiff !== 0) return recencyDiff;
@@ -190,14 +242,14 @@ export function compareBlockedRows(
 
 export function sortBlockedInboxRows(
   rows: readonly BlockedInboxIssueRow[],
-  sort: BlockedInboxSort = "urgency",
+  sort: BlockedInboxSort = "leverage",
 ): BlockedInboxIssueRow[] {
   return [...rows].sort((a, b) => compareBlockedRows(a, b, sort));
 }
 
 export function groupBlockedInboxRows(
   rows: readonly BlockedInboxIssueRow[],
-  sort: BlockedInboxSort = "urgency",
+  sort: BlockedInboxSort = "leverage",
 ): BlockedInboxGroup[] {
   const buckets = new Map<BlockedReasonVariant, BlockedInboxIssueRow[]>();
   for (const row of rows) {

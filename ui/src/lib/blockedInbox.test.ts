@@ -9,6 +9,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   BLOCKED_REASON_VARIANT_ORDER,
+  BLOCKED_SORT_OPTIONS,
   blockedBadgeTone,
   blockedReasonLabel,
   blockedReasonVariant,
@@ -18,11 +19,25 @@ import {
   buildBlockedInboxRows,
   compareBlockedAttention,
   compareBlockedRows,
+  computeBlockerFanOut,
   formatStoppedAge,
   groupBlockedInboxRows,
   sortBlockedInboxRows,
   type BlockedInboxIssueRow,
 } from "./blockedInbox";
+
+function blockerSummary(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    identifier: `BLOCK-${id}`,
+    title: `Blocker ${id}`,
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    ...overrides,
+  } as unknown as Issue["blockedBy"] extends (infer T)[] | undefined ? T : never;
+}
 
 function makeAttention(
   overrides: Partial<IssueBlockedInboxAttention> = {},
@@ -261,6 +276,113 @@ describe("blockedInbox", () => {
       makeIssue({ id: "c" }, makeAttention({ severity: "critical" })),
     ];
     expect(blockedBadgeTone(buildBlockedInboxRows(critical))).toBe("red");
+  });
+
+  it("computeBlockerFanOut counts each unique upstream blocker once per issue", () => {
+    const issues = [
+      makeIssue(
+        { id: "downstream-1", blockedBy: [blockerSummary("BX"), blockerSummary("BY")] },
+        makeAttention(),
+      ),
+      makeIssue(
+        { id: "downstream-2", blockedBy: [blockerSummary("BX")] },
+        makeAttention(),
+      ),
+      makeIssue(
+        { id: "downstream-3", blockedBy: [blockerSummary("BX"), blockerSummary("BX")] },
+        makeAttention(),
+      ),
+      makeIssue(
+        { id: "downstream-4", blockedBy: [blockerSummary("BZ")] },
+        null,
+      ),
+    ];
+    const fanOut = computeBlockerFanOut(issues);
+    expect(fanOut.get("BX")).toBe(3);
+    expect(fanOut.get("BY")).toBe(1);
+    expect(fanOut.get("BZ")).toBe(1);
+  });
+
+  it("buildBlockedInboxRows annotates each row with its max upstream fan-out", () => {
+    const rows = buildBlockedInboxRows([
+      makeIssue(
+        { id: "low", blockedBy: [blockerSummary("BY")] },
+        makeAttention({ severity: "medium" }),
+      ),
+      makeIssue(
+        { id: "mid", blockedBy: [blockerSummary("BX")] },
+        makeAttention({ severity: "medium" }),
+      ),
+      makeIssue(
+        { id: "high", blockedBy: [blockerSummary("BX"), blockerSummary("BY")] },
+        makeAttention({ severity: "medium" }),
+      ),
+    ]);
+    const byId = new Map(rows.map((row) => [row.issue.id, row]));
+    expect(byId.get("low")!.blockerFanOut).toBe(2);
+    expect(byId.get("mid")!.blockerFanOut).toBe(2);
+    expect(byId.get("high")!.blockerFanOut).toBe(2);
+  });
+
+  it("leverage sort surfaces the highest-fan-out blockers first, with severity then age as tie-breakers", () => {
+    const rows = buildBlockedInboxRows([
+      makeIssue(
+        {
+          id: "lonely-critical",
+          blockedBy: [blockerSummary("SOLO")],
+        },
+        makeAttention({ severity: "critical", stoppedSinceAt: "2026-05-08T00:00:00.000Z" }),
+      ),
+      makeIssue(
+        {
+          id: "shared-low-newer",
+          blockedBy: [blockerSummary("SHARED"), blockerSummary("OTHER")],
+        },
+        makeAttention({ severity: "low", stoppedSinceAt: "2026-05-09T05:00:00.000Z" }),
+      ),
+      makeIssue(
+        {
+          id: "shared-high",
+          blockedBy: [blockerSummary("SHARED")],
+        },
+        makeAttention({ severity: "high", stoppedSinceAt: "2026-05-09T00:00:00.000Z" }),
+      ),
+      makeIssue(
+        {
+          id: "shared-low-older",
+          blockedBy: [blockerSummary("SHARED")],
+        },
+        makeAttention({ severity: "low", stoppedSinceAt: "2026-05-07T00:00:00.000Z" }),
+      ),
+    ]);
+
+    expect(sortBlockedInboxRows(rows, "leverage").map((row) => row.issue.id)).toEqual([
+      // SHARED has fan-out 3; SOLO has fan-out 1. The three SHARED rows beat
+      // the lone critical despite its higher severity.
+      "shared-high",
+      "shared-low-older",
+      "shared-low-newer",
+      "lonely-critical",
+    ]);
+  });
+
+  it("leverage sort is the default and is registered in BLOCKED_SORT_OPTIONS first", () => {
+    expect(BLOCKED_SORT_OPTIONS[0][0]).toBe("leverage");
+    const rows = buildBlockedInboxRows([
+      makeIssue({ id: "no-blockers" }, makeAttention({ severity: "low" })),
+      makeIssue(
+        { id: "with-blockers", blockedBy: [blockerSummary("X")] },
+        makeAttention({ severity: "low" }),
+      ),
+      makeIssue(
+        { id: "more-blockers", blockedBy: [blockerSummary("X")] },
+        makeAttention({ severity: "low" }),
+      ),
+    ]);
+    // Default sort (no second arg) should match explicit "leverage".
+    expect(sortBlockedInboxRows(rows).map((r) => r.issue.id)).toEqual(
+      sortBlockedInboxRows(rows, "leverage").map((r) => r.issue.id),
+    );
   });
 
   it("formatStoppedAge produces stable buckets", () => {
