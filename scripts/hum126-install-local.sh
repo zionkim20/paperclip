@@ -40,39 +40,62 @@ rm -rf "$INSTALLED_PKG/dist"
 cp -R "$FORK_ROOT/server/dist" "$INSTALLED_PKG/dist"
 
 PID="$(pgrep -f "node $NPX_CACHE/node_modules/.bin/paperclipai run" || true)"
-if [ -n "$PID" ]; then
-  echo "==> Stopping running daemon (pid $PID)"
-  kill "$PID"
-  # Wait up to 10s for graceful shutdown
-  for _ in $(seq 1 20); do
-    if ! kill -0 "$PID" 2>/dev/null; then break; fi
-    sleep 0.5
-  done
-  if kill -0 "$PID" 2>/dev/null; then
-    echo "    daemon still alive after 10s, sending SIGKILL"
-    kill -9 "$PID" || true
-  fi
-else
-  echo "==> No running daemon found; new bundle is in place for next start"
-fi
 
-echo "==> Starting daemon fresh"
 # Use the cached binary directly instead of `npx paperclipai@latest` so the
 # version-check/install path can't overwrite the freshly-swapped bundle.
 CACHED_BIN="$NPX_CACHE/node_modules/.bin/paperclipai"
 if [ ! -x "$CACHED_BIN" ]; then
   echo "ERROR: cached paperclipai binary not found at $CACHED_BIN" >&2
-  echo "Falling back to npx (may freshen the install)" >&2
-  CACHED_BIN_CMD="npx paperclipai@latest"
-else
-  CACHED_BIN_CMD="node $CACHED_BIN"
+  exit 1
 fi
 LOG_DIR="$HOME/.paperclip/instances/default/logs"
 mkdir -p "$LOG_DIR"
-nohup $CACHED_BIN_CMD run >"$LOG_DIR/daemon-hum126-${STAMP}.log" 2>&1 &
-NEW_PID=$!
+LOG_FILE="$LOG_DIR/daemon-hum126-${STAMP}.log"
+
+# Build a self-contained restart helper that we'll spawn fully detached. We do
+# this because if a Paperclip agent run is running THIS script, its own process
+# tree is a child of the daemon — killing the daemon can take the agent down
+# before the foreground here finishes spawning the new daemon. The helper runs
+# under setsid so it survives the daemon's death.
+HELPER="$(mktemp -t hum126-restart-helper.XXXXXX.sh)"
+cat > "$HELPER" <<HELPER_EOF
+#!/usr/bin/env bash
+set -u
+PID="${PID:-}"
+if [ -n "\$PID" ]; then
+  echo "[helper] stopping daemon pid \$PID" >>"$LOG_FILE"
+  kill "\$PID" 2>/dev/null || true
+  for _ in \$(seq 1 20); do
+    if ! kill -0 "\$PID" 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+  if kill -0 "\$PID" 2>/dev/null; then
+    echo "[helper] daemon still alive after 10s, SIGKILL" >>"$LOG_FILE"
+    kill -9 "\$PID" 2>/dev/null || true
+  fi
+fi
+# Wait for port 3100 to free up
+for _ in \$(seq 1 30); do
+  if ! lsof -i :3100 -sTCP:LISTEN >/dev/null 2>&1; then break; fi
+  sleep 0.5
+done
+echo "[helper] starting fresh daemon" >>"$LOG_FILE"
+exec node "$CACHED_BIN" run >>"$LOG_FILE" 2>&1
+HELPER_EOF
+chmod +x "$HELPER"
+
+echo "==> Spawning detached restart helper (will kill old daemon + start new)"
+echo "    log: $LOG_FILE"
+echo "    helper: $HELPER"
+# nohup + setsid + & + disown — fully detach from this script's process group
+# so the daemon-kill can't take the helper down with it.
+if command -v setsid >/dev/null 2>&1; then
+  setsid nohup "$HELPER" </dev/null >>"$LOG_FILE" 2>&1 &
+else
+  nohup "$HELPER" </dev/null >>"$LOG_FILE" 2>&1 &
+fi
 disown
-echo "    started pid $NEW_PID (log: ~/.paperclip/instances/default/logs/daemon-hum126-${STAMP}.log)"
+echo "==> Helper spawned. This script exits now; the helper will restart the daemon."
 
 echo ""
 echo "==> Done. Verify in the board:"
