@@ -57,7 +57,19 @@ else
 fi
 
 echo "==> Starting daemon fresh"
-nohup npx paperclipai@latest run >"$HOME/.paperclip/instances/default/logs/daemon-hum126-${STAMP}.log" 2>&1 &
+# Use the cached binary directly instead of `npx paperclipai@latest` so the
+# version-check/install path can't overwrite the freshly-swapped bundle.
+CACHED_BIN="$NPX_CACHE/node_modules/.bin/paperclipai"
+if [ ! -x "$CACHED_BIN" ]; then
+  echo "ERROR: cached paperclipai binary not found at $CACHED_BIN" >&2
+  echo "Falling back to npx (may freshen the install)" >&2
+  CACHED_BIN_CMD="npx paperclipai@latest"
+else
+  CACHED_BIN_CMD="node $CACHED_BIN"
+fi
+LOG_DIR="$HOME/.paperclip/instances/default/logs"
+mkdir -p "$LOG_DIR"
+nohup $CACHED_BIN_CMD run >"$LOG_DIR/daemon-hum126-${STAMP}.log" 2>&1 &
 NEW_PID=$!
 disown
 echo "    started pid $NEW_PID (log: ~/.paperclip/instances/default/logs/daemon-hum126-${STAMP}.log)"
