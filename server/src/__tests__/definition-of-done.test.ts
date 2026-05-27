@@ -97,13 +97,38 @@ describe("evaluatePreflightAcceptanceGuard", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("allows reassignment to the original creator agent (author self-assignment)", () => {
+  it("allows author self-assignment when the actor is the creator agent assigning back to itself", () => {
     const result = evaluatePreflightAcceptanceGuard({
       existing: { ...baseExisting, createdByAgentId: "agent-author" },
       requestedAssigneeAgentId: "agent-author",
-      actor: baseActor,
+      actor: {
+        actorType: "agent",
+        actorId: "agent-author",
+        agentId: "agent-author",
+      },
     });
     expect(result.allowed).toBe(true);
+  });
+
+  it("blocks a third-party agent from routing an Acceptance-less issue back to its creator (HUM-232)", () => {
+    const result = evaluatePreflightAcceptanceGuard({
+      existing: {
+        ...baseExisting,
+        createdByAgentId: "agent-author",
+        description: "no structured acceptance here",
+      },
+      requestedAssigneeAgentId: "agent-author",
+      actor: {
+        actorType: "agent",
+        actorId: "agent-third-party",
+        agentId: "agent-third-party",
+      },
+    });
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.status).toBe(422);
+      expect(result.error).toMatch(/Acceptance/);
+    }
   });
 
   it("blocks reassignment to a new agent when description lacks Acceptance", () => {
