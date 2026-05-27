@@ -104,10 +104,14 @@ export function evaluatePreflightAcceptanceGuard(
     return { allowed: true };
   }
 
-  // Author self-assignment is exempt (new assignee is the original creator).
+  // Author self-assignment is exempt: the creator agent is also the actor and
+  // is assigning back to themselves. A third-party agent routing an
+  // Acceptance-less issue to its creator must NOT bypass the guard (HUM-232).
   if (
-    existing.createdByAgentId &&
-    existing.createdByAgentId === requestedAssigneeAgentId
+    actor.actorType === "agent" &&
+    actor.agentId &&
+    actor.agentId === existing.createdByAgentId &&
+    actor.agentId === requestedAssigneeAgentId
   ) {
     return { allowed: true };
   }
